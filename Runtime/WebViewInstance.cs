@@ -88,6 +88,15 @@ public sealed class WebViewInstance : IDisposable
     /// <summary>Whether the page-finished-loading callback has fired for the current page.</summary>
     public bool DiagPageFinished { get; private set; }
 
+    /// <summary>Whether <c>OnBeginLoading</c> ever fired (proves Ultralight saw the LoadHtml/LoadUrl request).</summary>
+    public bool DiagBeginLoadingFired { get; private set; }
+
+    /// <summary>Last URL the view navigated to (from <c>OnChangeUrl</c>).</summary>
+    public string? DiagLastUrl { get; private set; }
+
+    /// <summary>Number of times the title changed (from <c>OnChangeTitle</c>) - any change &gt; 0 proves the view is alive.</summary>
+    public int DiagTitleChangeCount { get; private set; }
+
     /// <summary>Formatted error string from the last page-load failure, or <c>null</c> if no error.</summary>
     public string? DiagLoadError { get; private set; }
 
@@ -161,15 +170,24 @@ public sealed class WebViewInstance : IDisposable
         _view.Focus();
 
         // -- Register native callbacks for load tracking --
+        _view.OnBeginLoading += OnBeginLoadingHandler;
         _view.OnDomReady += OnDOMReadyHandler;
         _view.OnFinishLoading += OnFinishLoadingHandler;
         _view.OnFailLoading += OnFailLoadingHandler;
         _view.OnAddConsoleMessage += OnConsoleMessageHandler;
+        _view.OnChangeUrl   += url   => { DiagLastUrl = url; Logger.Info($"WebViewInstance: URL changed -> {url}"); };
+        _view.OnChangeTitle += title => { DiagTitleChangeCount++; DiagPageTitle = title; Logger.Info($"WebViewInstance: Title changed -> {title}"); };
 
         Logger.Info($"Ultralight view created ({width}x{height}, CPU bitmap, transparent).");
     }
 
     // -- Native callback handlers --
+
+    private void OnBeginLoadingHandler(ulong frameId, bool isMainFrame, string url)
+    {
+        DiagBeginLoadingFired = true;
+        Logger.Info($"WebViewInstance: BeginLoading (frame={frameId}, main={isMainFrame}, url={url})");
+    }
 
     private void OnDOMReadyHandler(ulong frameId, bool isMainFrame, string url)
     {
@@ -201,7 +219,10 @@ public sealed class WebViewInstance : IDisposable
     public void LoadHtml(string html)
     {
         if (_view is null) return;
-        Logger.Info("WebViewInstance: Loading HTML content...");
+        Logger.Info($"WebViewInstance: Loading HTML content ({html.Length:N0} chars)...");
+        ResetLoadDiagnostics();
+        // Tick the renderer once before loading so internal state machines are ready.
+        _renderer?.Update();
         _view.LoadHtml(html);
         WarmUp();
     }
@@ -212,23 +233,48 @@ public sealed class WebViewInstance : IDisposable
     {
         if (_view is null) return;
         Logger.Info($"WebViewInstance: Loading URL: {url}");
+        ResetLoadDiagnostics();
+        _renderer?.Update();
         _view.Url = url;
         WarmUp();
     }
 
+    private void ResetLoadDiagnostics()
+    {
+        DiagBeginLoadingFired = false;
+        DiagDOMReady = false;
+        DiagPageFinished = false;
+        DiagLoadError = null;
+    }
+
     /// <summary>
-    /// Pumps the renderer several times to give the page a chance to parse,
-    /// layout, and produce initial paint during Startup (before the main loop).
+    /// Pumps the renderer until the page becomes DOM-ready (or a hard cap is reached).
     /// </summary>
+    /// <remarks>
+    /// Ultralight parses HTML on its WebKit worker thread pool (the "Initializing Thread Pool"
+    /// log line). Parser-completion events are queued back to the renderer thread and dispatched
+    /// from <see cref="UltralightNet.Renderer.Update"/>. A tight pump loop with no sleeps would
+    /// usually return before the worker threads have produced a single layout, leaving DOMReady
+    /// stuck at <c>false</c> until the main loop finally takes over. We therefore pump with a
+    /// small sleep between iterations and stop early once DOMReady fires.
+    /// </remarks>
     private void WarmUp()
     {
         if (_renderer is null) return;
-        for (int i = 0; i < 10; i++)
+        const int maxIterations = 120;          // ~2 seconds at 16ms
+        const int sleepMs = 16;
+        for (int i = 0; i < maxIterations; i++)
         {
             _renderer.Update();
+            if (_view is not null) _view.NeedsPaint = true;
             _renderer.Render();
+            if (DiagDOMReady) break;
+            Thread.Sleep(sleepMs);
         }
-        Logger.Info($"WebViewInstance: Warm-up complete (DOMReady={DiagDOMReady}, Finished={DiagPageFinished}).");
+        Logger.Info(
+            $"WebViewInstance: Warm-up done (BeginLoading={DiagBeginLoadingFired}, " +
+            $"DOMReady={DiagDOMReady}, Finished={DiagPageFinished}, Url='{DiagLastUrl}', " +
+            $"Title='{DiagPageTitle}', LoadError='{DiagLoadError}').");
     }
 
     /// <summary>

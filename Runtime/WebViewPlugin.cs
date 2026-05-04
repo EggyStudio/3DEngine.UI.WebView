@@ -57,8 +57,19 @@ public sealed class WebViewPlugin : IPlugin
                 }
                 else
                 {
-                    // Default: load the embedded test page
-                    b.LoadHtml(LoadDefaultHtml());
+                    // Default: load the test page through the engine's asset pipeline
+                    // (FileAssetReader rooted at <baseDir>/source + StringLoader for .html).
+                    var html = LoadDefaultHtml(world);
+                    if (html is null)
+                    {
+                        Logger.Warn(
+                            "WebViewPlugin: default.html not available; webview will start blank.");
+                        b.LoadUrl("about:blank");
+                    }
+                    else
+                    {
+                        b.LoadHtml(html);
+                    }
                 }
 
                 Logger.Info("WebViewPlugin: Ultralight initialized (CPU bitmap) and content loaded.");
@@ -92,6 +103,7 @@ public sealed class WebViewPlugin : IPlugin
             }, "WebViewPlugin.Startup")
             .MainThreadOnly()
             .Read<Config>()
+            .Read<AssetServer>()
             .Write<WebViewInstance>()
             .Write<AppWindow>()
             .Write<Renderer>());
@@ -137,13 +149,23 @@ public sealed class WebViewPlugin : IPlugin
         Logger.Info("WebViewPlugin: Build complete.");
     }
 
-    private static string LoadDefaultHtml()
+    /// <summary>
+    /// Loads the default test page (<c>default.html</c>) through the engine's
+    /// <see cref="AssetServer"/>. Returns <c>null</c> if the asset is unavailable.
+    /// </summary>
+    private static string? LoadDefaultHtml(World world)
     {
-        using var stream = typeof(WebViewPlugin).Assembly
-            .GetManifestResourceStream("Engine.WebView.default.html");
-        if (stream is null)
-            throw new InvalidOperationException("Embedded resource 'Engine.WebView.default.html' not found.");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
+        var assets = world.Resource<AssetServer>();
+        try
+        {
+            var html = assets.LoadSync<string>("default.html");
+            Logger.Info($"WebViewPlugin: Loaded default.html via AssetServer ({html.Length:N0} chars).");
+            return html;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("WebViewPlugin: AssetServer.LoadSync<string>(\"default.html\") failed.", ex);
+            return null;
+        }
     }
 }

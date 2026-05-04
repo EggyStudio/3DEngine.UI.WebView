@@ -37,10 +37,14 @@ public struct WebViewDebugHud
         ImGui.Separator();
 
         // -- Page load state (from native callbacks) --
+        ImGui.TextColored(w.DiagBeginLoadingFired ? Green : Yellow,
+            $"BeginLoad:  {w.DiagBeginLoadingFired}");
         ImGui.TextColored(w.DiagDOMReady ? Green : Yellow,
             $"DOM Ready:  {w.DiagDOMReady}");
         ImGui.TextColored(w.DiagPageFinished ? Green : Yellow,
             $"Page Done:  {w.DiagPageFinished}");
+        ImGui.Text($"Url:        {w.DiagLastUrl ?? "(none)"}");
+        ImGui.Text($"Title chgs: {w.DiagTitleChangeCount}");
         if (w.DiagLoadError is not null)
             ImGui.TextColored(Red, $"Load Error: {w.DiagLoadError}");
         if (w.DiagLastConsoleMessage is not null)
@@ -62,9 +66,13 @@ public struct WebViewDebugHud
         ImGui.Separator();
 
         // -- Warnings --
-        if (!w.DiagDOMReady && w.DiagUpdateCount > 60)
+        if (!w.DiagBeginLoadingFired && w.DiagUpdateCount > 60)
             ImGui.TextColored(Red,
-                "CRITICAL: DOM never became ready - page did not load!");
+                "CRITICAL: BeginLoading never fired - LoadHtml/LoadUrl was not accepted by the view!");
+
+        if (w.DiagBeginLoadingFired && !w.DiagDOMReady && w.DiagUpdateCount > 60)
+            ImGui.TextColored(Red,
+                "CRITICAL: Load started but DOM never became ready - parser stalled (check WebKit thread pool / fonts / ICU)!");
 
         if (w.DiagLoadError is not null)
             ImGui.TextColored(Red,
@@ -94,8 +102,11 @@ public struct WebViewDebugHud
             sb.AppendLine($"Surface:    {(w.HasSurface ? "YES" : "NO")}");
             sb.AppendLine($"RowBytes:   {w.SurfaceRowBytes}  (expected {w.Width * 4})");
             sb.AppendLine($"Page Title: {w.DiagPageTitle ?? "(null)"}");
+            sb.AppendLine($"BeginLoad:  {w.DiagBeginLoadingFired}");
             sb.AppendLine($"DOM Ready:  {w.DiagDOMReady}");
             sb.AppendLine($"Page Done:  {w.DiagPageFinished}");
+            sb.AppendLine($"Url:        {w.DiagLastUrl ?? "(none)"}");
+            sb.AppendLine($"Title chgs: {w.DiagTitleChangeCount}");
             if (w.DiagLoadError is not null)
                 sb.AppendLine($"Load Error: {w.DiagLoadError}");
             if (w.DiagLastConsoleMessage is not null)
